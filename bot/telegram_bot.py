@@ -1,63 +1,66 @@
 import os
-import tempfile
-import urllib.request
-
-from PyPDF2 import PdfFileReader
-from PIL import Image
-from pyzbar.pyzbar import decode
-from telegram import Update
-from telegram.ext import Updater, MessageHandler, Filters
 from io import BytesIO
+import requests
+import logging
+import qrcode
+from telegram.ext import Updater, MessageHandler, Filters
+from PyMuPDF import PdfReader
 
-# Обработчик для документов
-def handle_document(update: Update, context) -> None:
-    document = update.message.document
-    file_name = os.path.join(tempfile.gettempdir(), document.file_name)
+# Устанавливаем уровень логирования
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
 
-    # Скачиваем документ
-    document.get_file().download(file_name)
+# Обработчик сообщений
+def handle_message(update, context):
+    # Получаем объект сообщения и его идентификатор
+    message = update.message
+    chat_id = message.chat_id
 
-    # Читаем PDF-файл
-    pdf = PdfFileReader(open(file_name, "rb"))
+    # Проверяем наличие прикрепленных файлов
+    if message.document:
+        document = message.document
+        file_id = document.file_id
 
-    qr_codes = []
+        # Скачиваем файл с серверов Telegram
+        file = context.bot.get_file(file_id)
+        file.download("input.pdf")
 
-    # Извлекаем изображения из PDF
-    for page_num in range(pdf.numPages):
-        page = pdf.getPage(page_num)
-        xObject = page['/Resources']['/XObject'].get_object()
-        for obj in xObject:
-            if xObject[obj]['/Subtype'] == '/Image':
-                data = xObject[obj]
-                image = Image.frombytes(
-                    data['/ColorSpace'], (data['/Width'], data['/Height']), data._data
-                )
-                qr_codes.append(image)
+        # Извлекаем QR-коды из PDF-файла
+        pdf = PdfReader("input.pdf")
+        qr_codes = []
+        for page in pdf.pages:
+            xObject = page['/Resources']['/XObject'].get_object()
+            for obj in xObject:
+                if xObject[obj]['/Subtype'] == '/Image':
+                    size = (xObject[obj]['/Width'], xObject[obj]['/Height'])
+                    data = xObject[obj].get_data()
+                    img = qrcode.decode(data)
+                    qr_codes.append(img)
 
-    # Декодируем QR-коды и отправляем результат
-    for i, qr_code in enumerate(qr_codes):
-        decoded = decode(qr_code)
-        if decoded:
-            update.message.reply_text(f"QR Code {i+1}:\n{decoded[0].data.decode()}")
-            image_bytes = BytesIO()
-            qr_code.save(image_bytes, format='PNG')
-            image_bytes.seek(0)
-            update.message.reply_photo(photo=image_bytes)
+        # Отправляем QR-коды обратно пользователю
+        for qr_code in qr_codes:
+            qr_code.save("output.png")
+            context.bot.send_photo(chat_id=chat_id, photo=open("output.png", "rb"))
+        
+        # Удаляем временные файлы
+        os.remove("input.pdf")
+        os.remove("output.png")
+        
+        # Отправляем сообщение о завершении
+        context.bot.send_message(chat_id=chat_id, text="Извлечение QR-кодов завершено!")
+    else:
+        # Если нет прикрепленных файлов, отправляем сообщение с просьбой прикрепить PDF-файл
+        context.bot.send_message(chat_id=chat_id, text="Пожалуйста, прикрепите PDF-файл с QR-кодами.")
 
-    # Удаляем временные файлы
-    os.remove(file_name)
+# Инициализация бота и добавление обработчика
+def main():
+    # Вставьте ваш токен бота
+    TOKEN = '1441387826:AAFrkhHe4TQA1zLvI9sGr_lPKn35kacbJ58'
+    updater = Updater(token=TOKEN, use_context=True)
+    dispatcher = updater.dispatcher
+    dispatcher.add_handler(MessageHandler(Filters.document, handle_message))
+    updater.start_polling()
+    updater.idle()
 
-# Токен вашего бота
-TOKEN = "1441387826:AAGGQdWjIXxrDmgci490jx6BEaXxFLEMnts"
-
-# Создаем экземпляр бота
-updater = Updater(token=TOKEN, use_context=True)
-
-# Добавляем обработчик документов
-updater.dispatcher.add_handler(MessageHandler(Filters.document, handle_document))
-
-# Запускаем бота
-updater.start_polling()
-
-# В бесконечном цикле ждем входящих сообщений и обновлений
-updater.idle()
+if __name__ == '__main__':
+    main()
